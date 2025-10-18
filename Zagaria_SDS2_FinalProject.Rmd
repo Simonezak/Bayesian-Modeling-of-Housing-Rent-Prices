@@ -1,0 +1,1725 @@
+
+---
+title: "<span style='color:#2196F3'> Bayesian Analysis of Rent Prices in Indian cities </span>"
+author: "Simone Zagaria, 2145389"
+date: "`r Sys.Date()`"
+
+output:
+  html_document:
+    df_print: paged
+    code_folding: hide
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: false
+    theme: paper
+    highlight: tango
+  word_document: default
+  pdf_document: default
+
+geometry: margin=1.25cm
+fontsize: 12pt
+
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+# Introduction
+
+Housing affordability has become a critical problems in urban centers, where rental prices are becoming very high and fluctuate due to various factors such as property size, number of rooms, location, and furnishing status. 
+
+In this project, our objective is to construct a **Bayesian Hierarchical Model** to account for this variability at multiple levels. In particular, we explored three different model specifications and assessed their 
+performance and convergence to try and capture the best distribution of rent prices. The best model will also be compared to a corresponding frequentist model to assess their differences.
+
+This research aims to assist individuals seeking for rental housing by identifying the key factors that influence rent prices. By understanding these factors, these people can make more informed decisions and find the most cost-effective options.
+
+```{r include=FALSE }
+# Loading the libraries
+set.seed(1234)
+library(wesanderson)
+library(clubSandwich)
+library(ggplot2)
+library(corrplot)
+library(stats)
+library(brms)
+library(scales)
+library(bayesplot)
+library(e1071)
+library(reshape2)
+library(GGally)
+library(plotly)
+library(patchwork)
+library(posterior)
+library(lme4)
+library(broom.mixed)
+library(gamlss)
+library(glmmTMB)
+library(DHARMa)
+library(kableExtra)
+library(coda)
+library(rjags)
+library(ggpointdensity)
+library(R2jags)
+library(dplyr)
+library(LaplacesDemon)
+library(cowplot)
+library(gridExtra)
+library(htmlwidgets)
+library(MASS)
+library(caret)
+
+```
+
+
+## Dataset  
+
+The dataset used in this project is based on real rental property data from India from 2023. 
+It provides detailed information on rental properties across various cities, including 
+property characteristics, pricing details and tenant preferences. 
+
+In particular, it includes:
+
+- **BHK**: Number of Bedrooms, Hall, and Kitchen in the property.
+- **Rent**: Monthly rental price of the property (in Indian Rupees).
+- **Bathroom**: Number of bathrooms available in the property.  
+- **Size**: Area of the property in square feet.  
+- **Floor**: The floor number where the property is located and the total number of floors in the building.  
+- **City**: The city in which the property is located.  
+- **Furnishing Status**: Indicates whether the property is Furnished, Semi-Furnished, or Unfurnished.
+- **Area Type**: Type of area measurement used. (Super Area, Carpet Area, or Built Area)  
+- **Tenant Preferred**: The type of tenants preferred by the owner or agent.  
+- **Point of Contact**: The person or entity to contact for further details about the property.  
+
+The dataset is publicly available on Kaggle: https://www.kaggle.com/datasets/iamsouravbanerjee/house-rent-prediction-dataset. 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# Loading the data
+df <- read.csv(r"(C:\Users\nephr\Desktop\SDS2 Project\1 - House Pricings\SDS2_Zagaria\House_Rent_Dataset.csv)")
+head(df)
+```
+
+## Preprocessing and Data Cleaning
+
+Before Analyzing the data, we'll clean and preprocess the dataset. First, we ensure that there are no NaN values:
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# Count missing values
+null_count <- colSums(is.na(df))
+null_count
+```
+
+The dataset appears to have no missing values.
+Next, we remove the irrelevant columns and we convert into categorical factors the columns with a limited number of unique values. We also formatted the 'Floor' column in numeric format to allow analyses.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, class.source = 'fold-show'}
+# Remove useless column
+df <- df[, !(names(df) %in% c("Posted.On"))]
+
+# Create a copy of the original dataset to not modify the original
+df_clean <- df
+
+# Convert to factors with textual labels
+df_clean$Furnishing.Status   <- factor(df_clean$Furnishing.Status)
+df_clean$Tenant.Preferred    <- factor(df_clean$Tenant.Preferred)
+df_clean$Point.of.Contact    <- factor(df_clean$Point.of.Contact)
+df_clean$Area.Type           <- factor(df_clean$Area.Type)
+df_clean$City                <- factor(df_clean$City)
+
+# Clean the "Floor" variable (Ground = 0, take only the first number)
+df_clean$Floor[grepl("Ground", df_clean$Floor, ignore.case = TRUE)] <- "0"
+df_clean$Floor <- as.integer(sub("([0-9]+).*", "\\1", df_clean$Floor))
+
+df_clean <- df_clean[!is.na(df_clean$Floor), ]
+
+```
+
+```{r include=FALSE}
+
+df_clean$Floor <- ifelse(df_clean$Floor >= quantile(df_clean$Floor, 0.95), quantile(df_clean$Floor, 0.95),ifelse(df_clean$Floor <= quantile(df_clean$Floor, 0.05), quantile(df_clean$Floor, 0.05), df_clean$Floor))
+
+df_clean$Rent <- ifelse(df_clean$Rent >= quantile(df_clean$Rent, 0.99), quantile(df_clean$Rent, 0.99), df_clean$Rent)
+
+```
+
+Below is the cleaned version of the dataset:
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+head(df_clean)
+```
+
+
+# Exploratory Data Analysis
+
+Next, we perform Exploratory Data Analysis (EDA) to understand the structure and distribution of the data and to identify patterns.
+
+First, we constructed boxplots to observe the distribution of the numerical variables in the dataset.  These visualizations allow to notice immeditatly tendencies, variability, and the presence of outliers:
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# List of numerical variables
+num_vars <- c("Rent", "Size", "Floor", "BHK", "Bathroom")
+
+# Create a list of interactive boxplots
+plots <- lapply(num_vars, function(var) {
+  p <- ggplot(df_clean, aes(x = "", y = get(var))) +
+    geom_boxplot(fill = "#2196F3", color = "#003366") +
+    theme_minimal() +
+    labs(title = var, y = var)
+  
+  ggplotly(p)
+})
+
+htmltools::tagList(plots)
+
+
+```
+Starting with **Rent**, we observe a strong right-skewed distribution. The majority of rental prices are concentrated in the lower range, while a significant number of extreme outliers indicate the presence of properties with much higher rents. This suggests that this variable might need a transformation to reduce the influence of those extreme values. **Size** shows a similar pattern, with a concentration around smaller property sizes and several large outliers. Like Rent, this too needs a transformation.
+
+The **Floor**, **BHK** and **Bathroom** variables, on the other hand show a more balanced spread. In particular, Most listings appear to be between the ground and the 6th floor, and only few outliers above the 10th floor, have 1 to 3 bathrooms and 1 to 3 BHK rooms. All those 3 variables show a clear and interpretable structure, therefore they *do not need transformation* and can be *straightforwardly included* in the Bayesian model.
+
+Let's also plot the histogram of Rent and Size to further examine their skewness and identify the presence of extreme values:
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Rent histogram
+h1 <- ggplot(df_clean, aes(x = Rent)) +
+  geom_histogram(bins = 35, fill = "#2196F3", color = "#003366") +
+  labs(title = "Rent Histogram", x = "Rent", y = "Frequency") +
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill = "#FFFFFF", color = "#F0F0F0"),
+    panel.border = element_rect(color = "#003366", fill = NA, size = 1)
+  )
+
+# Size histogram
+h2 <- ggplot(df_clean, aes(x = Size)) +
+  geom_histogram(bins = 35, fill = "#FF9800", color = "#8a3601") +
+  labs(title = "Size Histogram", x = "Size", y = "Frequency") +
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill = "#FFFFFF", color = "#F0F0F0"),
+    panel.border = element_rect(color = "#003366", fill = NA, size = 1)
+  )
+
+grid.arrange(h1, h2, ncol = 2)
+
+
+```
+
+From this plots we can confirm that both distributions present a pronounced right skewness and need appropriate preprocessing to improve the performance and interpretability of the hierarchical Bayesian model.
+
+Next, we wanted to explore if effectively rental prices vary across different cities and how they vary in relation to the number of rooms:
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Boxplot for the "City" variable with respect to rent
+subur <- ggplot(df_clean, aes(x=Rent, y=factor(City), fill=factor(City))) +
+  geom_boxplot(outlier.colour="black", outlier.shape=16,
+               outlier.size=2, notch=FALSE) +
+  labs(title="City vs Rent", x="Rent", y="City") +
+  scale_y_discrete(guide = guide_axis(check.overlap = TRUE)) +
+  scale_fill_brewer(palette = "Set3")
+
+# Scatter plot Rent vs BHK
+room_s <- ggplot(df_clean, aes(x=Rent, y=BHK, color=BHK, na.rm=TRUE)) +
+  geom_point(na.rm=TRUE, position="jitter", alpha=0.3) +
+  labs(title="BHK in relation to Rent", x="Rent", y="BHK") +
+  scale_x_continuous(guide = guide_axis(check.overlap = TRUE)) +
+  scale_y_continuous(guide = guide_axis(check.overlap = TRUE))
+
+grid.arrange(subur, room_s)
+
+
+```
+
+In the City vs Rent boxplot, we observe clear geographic differences in rental pricing. Mumbai stands out with significantly higher rent values and a wider spread, indicating both a higher baseline and a broader range of property prices. Other major cities like Delhi, Bangalore, and Chennai show relatively moderate rent distributions, while Kolkata and Hyderabad exhibit more compact ranges with lower median rents. 
+The Rent vs BHK scatter plot instead, illustrates the relationship between the number of rooms and rental price. As expected, there is a general upward trend: properties with more rooms tend to command higher rents. However, the increase is not strictly linear. We can observe a high density of 1–3 BHK listings with a wide rent range, suggesting that other factors (e.g., location, furnishing, or property size) also heavily influence rental prices. Higher BHK values (4 and above) are rarer and more scattered, often associated with the upper end of the rent scale, but not exclusively.
+
+Finally, before passing to the data transformation and the models, we measure the correlation between the numerical values:
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Selecting only numerical variables
+features <- c("Rent","Size","Floor","BHK","Bathroom")
+
+# Filter the dataset
+cor_data <- dplyr::select(df_clean, all_of(features))
+
+# Computing the correlation matrix
+cor_matrix <- cor(cor_data, use = "complete.obs")
+
+par(bg = "#F0F0F0")
+corrplot(cor_matrix, method = "color", type = "upper",
+         tl.col = "black", tl.srt = 50, 
+         addCoef.col = "black", number.cex = 0.8,
+         tl.cex = 0.8)  
+
+```
+
+From this plot,we observed that some variables could pose challenges for the model due to their high correlation. In particular, those variables are **BHK**, **Bathroom** and **Size**. Since Size plays a key role in explaining rental price, and by experimenting we understood that retaining it did not significantly affect model convergence or stability, we decided to keep it as a predictor. However, to reduce redundancy, we decided to combine the fields BHK and Bathroom into a single variable called **TotalRooms**, as we will see in the next section.
+
+
+# Data Transformation
+
+To address the strong right-skewness observed in the Rent and Size variables, I applied the Box–Cox transformation. Unlike fixed transformations such as the logarithm or square root, the Box–Cox method allows for a data-driven selection of the transformation parameter (λ) that maximizes the likelihood of normality. This flexibility makes it especially useful when the appropriate transformation is not obvious or when the variables exhibit non-standard skewness.
+
+In particular, the log transformation is equivalent to the Box–Cox transformation with λ = 0. However, enforcing a log transformation without testing whether it's optimal can lead to suboptimal normalization, especially when the data deviates from strict log-normality. The Box–Cox method empirically identifies the best λ within a specified range—in this case, from -2 to 2—ensuring that the transformation is tailored to the actual distribution of each variable.
+
+Before applying the Box–Cox transformation, I evaluated the adequacy of a simple linear model using the untransformed Rent and Size variables. Q-Q Plot and Residuals vs Fitted values plot were used to assess the assumptions of normality and homoscedasticity of residuals.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Simple linear model with Box–Cox transformed Rent and Size
+residuals_bc <- lm(Rent ~ Size, data = df_clean)$residuals
+
+# Q-Q plot of the residuals
+qqnorm(residuals_bc, main = "Q-Q Plot of residuals")
+qqline(residuals_bc, col = "red", lwd = 2)
+
+
+```
+
+In the Q-Q plot of the residuals, we observe a pronounced deviation from the red reference line, especially in both tails of the distribution. The curvature indicates that the residuals are not normally distributed. In particular, the heavy tails suggest the presence of extreme values and skewness in the residuals, which violates the assumption of Gaussian errors and can severely impact inference and prediction accuracy, as expected from the previous plots.
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Linear model: transformed rent (Box–Cox) as a function of transformed size
+lm_model <- lm(Rent ~ Size, data = df_clean)
+
+# Extract residuals and fitted values
+residuals_bc <- residuals(lm_model)
+fitted_bc <- fitted(lm_model)
+
+ggplot(df_clean, aes(x = fitted_bc, y = residuals_bc)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(
+    title = "Residuals vs Fitted Values",
+    x = "Fitted Values",
+    y = "Residuals"
+  ) +
+  theme_minimal()
+
+```
+
+The residuals vs fitted values plot shows a clear pattern of heteroscedasticity: the spread of residuals increases with the fitted values, forming a cone-like shape. This means that the variance of the residuals is not constant across the range of predicted values — another key violation of linear model assumptions. Furthermore, the residuals appear to cluster in a non-random fashion, suggesting potential model misspecification. Thus this implies there is not homodasticity.
+
+Thus, we apply the Cox Box transformation to the mentioned fields:
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Box–Cox per Size
+bc_size <- boxcox(Size ~ 1, data = df_clean, lambda = seq(-2, 2, 0.1), plotit = FALSE)
+lambda_size <- bc_size$x[which.max(bc_size$y)]
+
+df_clean$Size_bc <- (df_clean$Size^lambda_size - 1) / lambda_size
+
+
+# Box–Cox per Rent
+bc_rent <- boxcox(Rent ~ 1, data = df_clean, lambda = seq(-2, 2, 0.1), plotit = FALSE)
+lambda_rent <- bc_rent$x[which.max(bc_rent$y)]
+
+df_clean$Rent_bc <- (df_clean$Rent^lambda_rent - 1) / lambda_rent
+
+```
+
+and let's observe the changes to the distributions:
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Rent
+h1 <- ggplot(df_clean, aes(x = Rent)) +
+  geom_histogram(bins = 35, fill = "#2196F3", color = "#003366") +
+  labs(title = "Histogram of Rent (Original)", x = "Rent", y = "Frequency") +
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill = "#FFFFFF", color = "#F0F0F0"),
+    panel.border = element_rect(color = "#003366", fill = NA, size = 1)
+  )
+
+# Rent bc
+h1_bc <- ggplot(df_clean, aes(x = Rent_bc)) +
+  geom_histogram(bins = 35, fill = "#2196F3", color = "#003366") +
+  labs(title = "Histogram of Rent (Box–Cox)", x = "Rent_bc", y = "Frequency") +
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill = "#FFFFFF", color = "#F0F0F0"),
+    panel.border = element_rect(color = "#003366", fill = NA, size = 1)
+  )
+
+
+
+
+# Size
+h2 <- ggplot(df_clean, aes(x = Size)) +
+  geom_histogram(bins = 35, fill = "#FF9800", color = "#8a3601") +
+  labs(title = "Histogram of Size (Original)", x = "Size", y = "Frequency") +
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill = "#FFFFFF", color = "#F0F0F0"),
+    panel.border = element_rect(color = "#003366", fill = NA, size = 1)
+  )
+
+# Size bc
+h2_bc <- ggplot(df_clean, aes(x = Size_bc)) +
+  geom_histogram(bins = 35, fill = "#FF9800", color = "#8a3601") +
+  labs(title = "Histogram of Size (Box–Cox)", x = "Size_bc", y = "Frequency") +
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill = "#FFFFFF", color = "#F0F0F0"),
+    panel.border = element_rect(color = "#003366", fill = NA, size = 1)
+  )
+
+grid.arrange(h1, h1_bc, h2, h2_bc, ncol = 2)
+
+
+```
+We observe already that the transformed variables are now much more symmetrically distributed. The right skew is significantly reduced, and the overall shape is closer to a normal distribution. This makes the variable far more suitable for modeling with Gaussian errors.
+
+However, we also want to re-evaluated the residual diagnostics to assess whether the transformation improved the distributional properties of the model residuals. For this, I performed again the two diagnostic checks:
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Simple linear model with Box–Cox transformed Rent and Size
+residuals_bc <- lm(Rent_bc ~ Size_bc, data = df_clean)$residuals
+
+# Q-Q plot of the residuals
+qqnorm(residuals_bc, main = "Q-Q Plot of residuals")
+qqline(residuals_bc, col = "red", lwd = 2)
+
+
+```
+
+
+Compared to the earlier version using untransformed variables, this Q-Q plot shows a much more linear relationship between the sample and theoretical quantiles. This indicates that the residuals now approximate a normal distribution much more closely.
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Linear model: transformed rent (Box–Cox) as a function of transformed size
+lm_model <- lm(Rent_bc ~ Size_bc, data = df_clean)
+
+# Extract residuals and fitted values
+residuals_bc <- residuals(lm_model)
+fitted_bc <- fitted(lm_model)
+
+ggplot(df_clean, aes(x = fitted_bc, y = residuals_bc)) +
+  geom_point(alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(
+    title = "Residuals vs Fitted Values",
+    x = "Fitted Values",
+    y = "Residuals"
+  ) +
+  theme_minimal()
+
+```
+
+In the Residuals vs Fitted plot, the residuals appear more evenly scattered around zero and exhibit less heteroscedasticity than before. The earlier funnel shape (indicating increasing variance with fitted values) has been significantly reduced. Although there is still some mild structure, the spread is far more contained and symmetric. This suggests that the Box–Cox transformation also helped stabilize the variance.
+
+Thus, we verified that these transformations significantly improved the normality of the residuals, stabilized the variance, and are expected to improve the convergence behavior of the Bayesian models.
+
+Finally, as previously stated, we also comvined **BHK** and **Bathroom** to have a variable of the total rooms, due to their high correlation:
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, class.source = 'fold-show'}
+
+df_clean$RoomsTotal <- df_clean$BHK + df_clean$Bathroom
+
+```
+
+
+# Bayesian Analysis
+
+In this section of the project, we implement various **Hierarchical Bayesian Linear Regression models** to estimate rental prices based on property characteristics. 
+The models will include both fixed and random effects. The fixed effects will include both numerical and categorical features, while the random effects are modeled at the city level, allowing the influence of the predictors on rent to vary by city.
+
+The main objective of this section is to evaluate three models, identify the best performing one, and determine which effects contribute the most to fluctuations in Rent price.
+
+We will examine the parameter estimates of the best-performing model at the end, after performing convergence diagnostics, and comparing all the models using appropriate evaluation metrics.
+
+## First Model
+
+We first developed a simple **hierarchical Bayesian linear regression model**, where the target variable is Rent, modeled as a function of property features (such as Size, Floor, RoomsTotal), as and a city-level random effect. 
+
+In this first model we decided to include only the numerical predictors as fixed effects.
+
+The model is defined as:
+
+$$
+Rent_i \sim \mathcal{N}(\mu_i, \tau^{-1})
+$$
+Where $\mu_i$ is the mean  expected value of Rent for observation $i$, defined as the linear combination of fixed and random effects as follows:
+
+$$
+\mu = \beta_1 + \beta_2 \cdot \text{Size} + \beta_3 \cdot \text{Floor} + \beta_4 \cdot \text{RoomsTotal} + \text{city_effect}_{\text{City}}
+$$
+And $\tau^{-1}$ is:
+
+$$
+\tau^{-1} = \sigma^2_{obs} \quad With \quad \sigma_{obs} \sim \text{Gamma}(1,1)
+$$
+
+This prior was chosen for $\sigma_{obs}$ for its ability to maintain positive values, reflecting the inherent property of standard deviations.
+
+The coefficients $\beta_1, \beta_2, \beta_3, \beta_4$ represent the fixed effects, while $\text{city_effect}_{\text{City}}$ introduces random variation across cities. All parameters are estimated using Bayesian inference, with the following prior distributions:
+
+- $\beta_1 - \beta_4$ : Normal(0,1), we assume that most effects are small, but allowing for the possibility of larger effects.
+
+- city_effect_raw :A Normal(0,0.01) prior was chosen to express weak prior information but more variance than the betas.
+
+- sd_city: Gamma(1, 1) prior for the standard deviation of city effects, chosen to be weakly informative and strictly positive, like $\sigma_{obs}$.
+
+- y_rep: Normal($\mu_i$,$\sigma^2_{obs}$) Posterior predictive simulations used for model checking
+
+To improve model stability and interpretability, we distinguish between city_effect_raw and city_effect: the first is an initial random draw for each city, centered around 0. Then, we subtract the mean of the raw effects to ensure the city-level terms do not shift the global intercept. Then, we scale the centered effects by sd_city, allowing the model to learn the actual variation across cities from the data.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, class.source = 'fold-show'}
+
+model_string_rental <- "
+model {
+  for (i in 1:N) {
+    Rent[i] ~ dnorm(mu[i], tau_obs)
+    y_rep[i] ~ dnorm(mu[i], tau_obs)
+
+    mu[i] <- beta[1] + 
+             beta[2] * Size[i] +
+             beta[3] * Floor[i] +
+             beta[4] * RoomsTotal[i] +
+             city_effect[City[i]]
+  }
+
+  beta[1] ~ dnorm(0, 1)
+  beta[2] ~ dnorm(0, 1)
+  beta[3] ~ dnorm(0, 1)
+  beta[4] ~ dnorm(0, 1)
+
+  for (c in 1:C) {
+    city_effect_raw[c] ~ dnorm(0, 0.01)
+  }
+
+  avg_raw <- sum(city_effect_raw[1:C]) / C
+
+  for (c in 1:C) {
+    city_effect[c] <- (city_effect_raw[c] - avg_raw) * sd_city
+  }
+
+  sd_city ~ dgamma(1, 1)
+  sigma_obs ~ dgamma(1,1)
+  tau_obs <- pow(sigma_obs, -2)
+}
+"
+
+jags_data <- list(
+  N = nrow(df_clean),
+  C = length(unique(df_clean$City)),
+  RoomsTotal = df_clean$RoomsTotal,
+  Size = df_clean$Size_bc,
+  Rent = df_clean$Rent_bc,
+  Floor = as.numeric(df_clean$Floor),
+  City = as.numeric(factor(df_clean$City)),
+  y_rep = rep(NA, nrow(df_clean))
+)
+
+# we initialize only city_effect_raw, because city_effect is derived
+inits <- function() {
+  list(
+    beta = rnorm(4, 0, 1),
+    sd_city = rgamma(1, 1, 1),
+    sigma_obs = rgamma(1, 1, 1),
+    city_effect_raw = rnorm(jags_data$C, 0, 1)
+
+  )
+}
+
+```
+
+### Execution
+
+Let's execute the model:
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Parameters to monitor
+params <- c("beta", "sd_city", "sigma_obs", "city_effect", "y_rep")
+
+# Build and run the model
+jags_model <- jags.model(
+  textConnection(model_string_rental),
+  data = jags_data,
+  inits = inits,
+  n.chains = 3
+)
+
+# Burn-in
+update(jags_model, n.iter = 1000)
+
+# Sampling
+samples <- coda.samples(
+  model = jags_model,
+  variable.names = params,
+  n.iter = 5000
+)
+
+
+```
+
+### Model summary and evaluation
+
+We start with the Posterior Predictive check.
+Posterior Predictive Check (PPC) is a fundamental tool in Bayesian analysis used to evaluate how well a model reproduces the observed data. In this case, the posterior predictive check plot compares the density of the observed rent data (in dark blue) with the model’s predictions (in light blue).
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Extracting the matrix of samples from the chain
+samples_matrix <- as.matrix(samples)
+y_rep_idx <- grep("^y_rep\\[", colnames(samples_matrix))
+y_rep_samples <- samples_matrix[, y_rep_idx]
+
+# Compute predictive mean for each observation
+y_rep_mean <- colMeans(y_rep_samples)
+
+# Use the original Rent variable
+observed <- df_clean$Rent_bc
+
+# Only 100 simulations for readability
+color_scheme_set("blue")
+ppc_1 <- ppc_dens_overlay(y = observed, yrep = y_rep_samples[1:100, ]) +
+  ggtitle("Posterior Predictive Check") +
+  theme_minimal()
+
+ppc_1
+```
+
+The plot shows a very close alignment between the observed data (y, in dark blue) and the replicated data (y_rep, in light blue). However, it slightly overestimates the density in the upper range (around 3.2) and underestimates it in some upper parts of the distribution.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Summary statistics
+cat("Observed mean:", mean(observed), "\n", "Predicted mean:", mean(y_rep_mean), "\n", "Observed SD:", sd(observed), "\n", "Predicted SD:", sd(y_rep_mean), "\n")
+
+```
+
+We also compare the mean and standard deviation of the predicted data and the observed data. The values for the mean are nearly identical, showing that the model accurately captures the central tendency of the target variable. On the other hand, the predicted variance is slightly narrower than the observed one, suggesting that the model may be underestimating the variability of the data.
+
+After the posterior predictive checks, we performed a second sampling step without y_rep to keep the analysis clean and efficient. Since y_rep includes one value per observation, it would otherwise clutter the output in summaries and traceplots:
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+params_diag <- c("beta", "sd_city", "sigma_obs", "city_effect")
+
+# Re-sampling without y_rep to avoid cluttering analyses
+samples_diag <- coda.samples(jags_model, variable.names = params_diag, n.iter = 5000)
+
+# DIC calculation
+dic_result <- dic.samples(jags_model, n.iter = 5000, type = "pD")
+mean_deviance <- mean(dic_result$deviance)
+mean_penalty <- mean(dic_result$penalty)
+dic_1 <- mean_deviance + mean_penalty
+
+print(paste("DIC value for the first model:", round(dic_1, 5)))
+```
+
+We will use the DIC value for comparison of the models after all the analyeses on all the models.
+
+### Convergence Diagnostics
+
+***Traceplot***
+
+For the evaluation of the MCMC convergence **Traceplots**, **Density plots**, **autocorrelation**, **Rhat** and **ESS** from the model summary were used.
+
+Trace plots are another essential tool for assessing the convergence of Markov Chain Monte Carlo chains in Bayesian models: they display the trends of multiple MCMC chains with the number of iteration on the x-axis and the value of the beta coefficient on the y-axis, helping to identify potential convergence issues.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Convert samples to matrix
+samples_matrix <- as.matrix(samples_diag)
+
+# Extract all parameter names
+all_params <- colnames(samples_matrix)
+
+# Select only relevant parameters for traceplot
+params <- all_params[grepl("beta|sd_city|city_effect", all_params)]
+chain_colors <- c("#2196F3", "#ff9800", "#003366")
+
+for (i in seq(1, length(params), by = 4)) {
+  end <- min(i + 3, length(params))
+  param_subset <- params[i:end]
+  
+  traceplot <- mcmc_trace(samples_diag, pars = param_subset) + scale_color_manual(values = chain_colors) + theme(legend.position = "none")
+  print(traceplot)
+}
+
+```
+
+We can observe that the 3 chains result in 3 overlapping trace plots. The fact that the plots for each coefficient have similar trends indicates that the chains are converging to the same posterior stationary distribution, suggesting robust results from our Bayesian model and the frequent crossing over of chains indicates good mixing, suggesting that the MCMC sampler is exploring the parameter space efficiently. 
+
+***Density plot***
+
+Another widely used tool, complementary to trace plots, is the density plot, which shows the posterior probability distribution of the predictor parameters.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+params2 <- all_params[grepl("beta|city_effect", all_params)]
+
+# Plotting Density plots
+for (i in seq(1, length(params2), by = 4)) {
+  end <- min(i + 3, length(params2))
+  param_subset <- params2[i:end]
+  
+  density_plot <- mcmc_dens_overlay(samples_diag, pars = param_subset) + scale_color_manual(values = chain_colors)  + theme(legend.position = "none")
+  print(density_plot)
+}
+
+```
+
+In our case, the density plots clearly reveal that all three chains converge to very similar normal distributions, indicating that the MCMC samples are effectively capturing the posterior distribution of the parameters.
+
+***Autocorrelation plot***
+
+Another widely used diagnostic is the autocorrelation plot, which shows how much each MCMC sample depends on previous ones. High autocorrelation indicates poor mixing and slow exploration of the posterior distribution.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+samples_matrix <- as.matrix(samples_diag)
+
+# Autocorrelation Plots
+for (i in seq(1, length(params2), by = 4)) {
+  end <- min(i + 3, length(params2))
+  param_subset <- params2[i:end]
+  
+  plots <- list()
+  
+  for (p in param_subset) {
+    p_samples <- samples_matrix[, p]
+    acf_vals <- acf(p_samples, plot = FALSE)
+    acf_df <- with(acf_vals, data.frame(lag, acf))
+    
+    g <- ggplot(acf_df, aes(x = lag, y = acf)) +
+      geom_bar(stat = "identity", fill = "lightblue", color = "blue") +
+      labs(title = paste("ACF -", p)) +
+      theme_minimal(base_size = 11)
+    
+    plots[[p]] <- g
+  }
+  
+  grid.arrange(grobs = plots, ncol = 2)
+}
+```
+
+In our case, the autocorrelation drops off quickly across lags for all parameters, suggesting that the chains are mixing well and providing effectively independent samples.
+
+**ESS and R-Hat**
+
+To further assess convergence and sampling efficiency, we computed key diagnostic statistics: R-hat, ess_bulk and ess_tail.
+**R-hat**, also known as Gelman-Rubin diagnostic, is a statistic tool used in Markov Chain Monte Carlo (MCMC) to evaluate convergence of the chains: when the value of R-hat is close to 1, it indicates that the chains converged to the same stationary target distribution.
+Meanwhile, **ESS** measures how many independent samples would be equivalent to the correlated samples obtained: when autocorrelation increases, ESS decreases, according to the formula:
+
+$$N_{eff} = \frac{N}{1 + 2\sum_{k = -\infty}^{\infty}\rho_k}$$
+where $N$ is the total number of samples and $\rho_k$ is the autocorrelation at lag $k$ between 2 successive samples.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+samples_matrix <- as.matrix(samples_diag)
+
+posterior_samples <- as_draws_df(samples_matrix)
+
+# Print only the relevant stats for convergence analysis
+summary_stats <- summarize_draws(posterior_samples, "rhat", "ess_bulk", "ess_tail")
+
+print(summary_stats, n = Inf)
+
+
+```
+
+In our case, all parameters showed satisfactory values, confirming the stability and efficiency of the MCMC sampling process.
+
+
+## Second Model
+
+In the second model, we expanded the set of predictors by including also the categorical features, in particular **Furnishing.Status**, **Tenant.Preferred**, **Area.Type** and **Point.of.Contact**. 
+These variables contain textual labels that cannot be directly used in the regression model. Therefore, the following steps were taken to properly prepare them.
+Before encoding, the levels of each categorical variable were cleaned and factorized.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# To clean the spaces and non-alphanumeric characters
+clean_levels <- function(x) {
+  x <- gsub("[^A-Za-z0-9]", "_", x)
+  x <- gsub("_+", "_", x)
+  x <- gsub("^_|_$", "", x)
+  return(x)
+}
+
+# Converting to factor before transforming in binary variables
+df_clean$Furnishing.Status <- factor(clean_levels(df_clean$Furnishing.Status))
+df_clean$Tenant.Preferred <- factor(clean_levels(df_clean$Tenant.Preferred))
+df_clean$Area.Type <- factor(clean_levels(df_clean$Area.Type))
+df_clean$Point.of.Contact <- factor(clean_levels(df_clean$Point.of.Contact))
+
+
+```
+
+After cleaning, we converted the categorical variables into **dummy variables** using the dummyVars() function. This produces N−1 binary columns for each categorical variable with N levels.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, class.source = 'fold-show'}
+
+categorical_vars <- df_clean[, c("Furnishing.Status", "Tenant.Preferred", "Area.Type", "Point.of.Contact")]
+
+# Transforming the variables into binary variables
+dummy_model <- dummyVars(~ ., data = categorical_vars, fullRank = TRUE)
+dummies_df <- as.data.frame(predict(dummy_model, newdata = categorical_vars))
+
+
+```
+
+All the new dummy variable coefficients are treated as fixed effects in the model, and we assigned them Normal priors. 
+In particular, I decided to assign a prior of $\mathcal{N}(0, 0.01)$ to the categorical variables in order to provide a more informative prior, as these variables typically contribute less variability and can lead to overfitting if too many parameters are included.
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, class.source = 'fold-show'}
+
+model_string_rental2 <- "
+model {
+  for (i in 1:N) {
+    Rent[i] ~ dnorm(mu[i], tau_obs)
+    y_rep[i] ~ dnorm(mu[i], tau_obs)
+
+    mu[i] <- beta[1] +             
+             beta[2] * Size[i] +
+             beta[3] * Floor[i] +
+             beta[4] * RoomsTotal[i] +
+             beta[5] * Furnishing1[i] +
+             beta[6] * Furnishing2[i] +
+             beta[7] * Tenant2[i] +
+             beta[8] * Contact1[i] +
+             city_effect[City[i]]
+  }
+
+  for (j in 1:4) {
+    beta[j] ~ dnorm(0, 1)
+  }
+
+  for (j in 5:8) {
+    beta[j] ~ dnorm(0, 0.01)
+  }
+
+  for (c in 1:C) {
+    city_effect_raw[c] ~ dnorm(0, 0.01)
+  }
+
+  avg_raw <- sum(city_effect_raw[1:C]) / C
+  for (c in 1:C) {
+    city_effect[c] <- (city_effect_raw[c] - avg_raw) * sd_city
+  }
+
+  sd_city ~ dgamma(1, 1)
+  sigma_obs ~ dgamma(1, 1)
+  tau_obs <- pow(sigma_obs, -2)
+}
+"
+
+jags_data2 <- list(
+  N = nrow(df_clean),
+  C = length(unique(df_clean$City)),
+  Rent = df_clean$Rent_bc,
+  Size = df_clean$Size_bc,
+  Floor = df_clean$Floor,
+  RoomsTotal = df_clean$RoomsTotal,
+  Furnishing1 = dummies_df$Furnishing.Status.Semi_Furnished,
+  Furnishing2 = dummies_df$Furnishing.Status.Unfurnished,
+  #Tenant1 = dummies_df$Tenant.Preferred.Bachelors_Family,
+  Tenant2 = dummies_df$Tenant.Preferred.Family,
+  #AreaType1 = dummies_df$Area.Type.Carpet_Area,
+  #AreaType2 = dummies_df$Area.Type.Super_Area,
+  Contact1 = dummies_df$Point.of.Contact.Contact_Owner,
+  #Contact2 = dummies_df$Point.of.Contact.Contact_Builder,
+  City = as.numeric(factor(df_clean$City)),
+  y_rep = rep(NA, nrow(df_clean))
+)
+
+inits2 <- function() {
+  list(
+    beta = rnorm(8, 0, 1),
+    sd_city = rgamma(1, 1, 1),
+    sigma_obs = rgamma(1, 1, 1),
+    city_effect_raw = rnorm(jags_data2$C, 0, 1)
+  )
+}
+
+```
+
+
+### Execution
+
+Let's execute the second model:
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Parameters to monitor
+params <- c("beta", "sd_city", "sigma_obs", "city_effect", "y_rep")
+
+# Build and run the model
+jags_model <- jags.model(
+  textConnection(model_string_rental2),
+  data = jags_data2,
+  inits = inits2,
+  n.chains = 3
+)
+
+# Burn-in
+update(jags_model, n.iter = 1000)
+
+# Sampling
+samples <- coda.samples(
+  model = jags_model,
+  variable.names = params,
+  n.iter = 5000
+)
+
+
+```
+
+### Model summary and evaluation
+
+We check for the second model the posterior predictive check:
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Extracting the matrix of samples from the chain
+samples_matrix <- as.matrix(samples)
+y_rep_idx <- grep("^y_rep\\[", colnames(samples_matrix))
+y_rep_samples <- samples_matrix[, y_rep_idx]
+
+# Compute predictive mean for each observation
+y_rep_mean <- colMeans(y_rep_samples)
+
+# Use the original Rent variable
+observed <- df_clean$Rent_bc
+
+# Only the first 100 predictions to not clutter the graph
+color_scheme_set("blue")
+ppc_2 <- ppc_dens_overlay(y = observed, yrep = y_rep_samples[1:100, ]) +
+  ggtitle("Posterior Predictive Check") +
+  theme_minimal()
+
+ppc_2
+```
+
+From the plot, we immediately notice an improved fit in the upper range of the rent distribution. This suggests that the inclusion of categorical variables, along with the adjustment to the priors, may have enabled the model to make more accurate predictions for higher rent values.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Summary statistics
+cat("Observed mean:", mean(observed), "\n", "Predicted mean:", mean(y_rep_mean), "\n", "Observed SD:", sd(observed), "\n", "Predicted SD:", sd(y_rep_mean), "\n")
+
+```
+
+The comparison of the observed and predicted Mean and SD further confirm the improvement of the model, being closer to the observed values.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Re-sampling without y_rep to avoid cluttering analyses
+samples_diag <- coda.samples(jags_model, variable.names = params_diag, n.iter = 5000)
+
+# DIC Calculation
+dic_result <- dic.samples(jags_model, n.iter = 5000, type = "pD")
+mean_deviance <- mean(dic_result$deviance)
+mean_penalty <- mean(dic_result$penalty)
+dic_2 <- mean_deviance + mean_penalty
+
+print(paste("DIC value for the second model:", round(dic_2, 5)))
+```
+
+The DIC value is definitely lower compared to the previous model (-4.7124), further confirming the improvement. Now let's check the convergence.
+
+### Convergence Diagnostics
+
+For the evaluation of the MCMC convergence Traceplot, density plots, autocorrelation, Rhat and ESS from the model summary were used, as for the previous model.
+
+***Traceplot***
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Convert samples to matrix
+samples_matrix <- as.matrix(samples_diag)
+all_params <- colnames(samples_matrix)
+
+# Select only relevant parameters for traceplot
+params <- all_params[grepl("beta|sd_city|city_effect", all_params)]
+chain_colors <- c("#2196F3", "#ff9800", "#003366")
+
+# Plot traceplots
+for (i in seq(1, length(params), by = 4)) {
+  end <- min(i + 3, length(params))
+  param_subset <- params[i:end]
+  
+  traceplot <- mcmc_trace(samples_diag, pars = param_subset) + scale_color_manual(values = chain_colors) + theme(legend.position = "none")
+  print(traceplot)
+}
+
+```
+
+The conclusions we can draw from these traceplots are the same as the first model, in fact, the trace plots indicate that the MCMC chains for the Bayesian hierarchical model have converged well, with good mixing and stationarity.
+
+
+***Density plot***
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+params2 <- all_params[grepl("beta|city_effect", all_params)]
+
+# Plotting Density plots
+for (i in seq(1, length(params2), by = 4)) {
+  end <- min(i + 3, length(params2))
+  param_subset <- params2[i:end]
+  
+  density_plot <- mcmc_dens_overlay(samples_diag, pars = param_subset) + scale_color_manual(values = chain_colors) + theme(legend.position = "none")
+  print(density_plot)
+}
+
+```
+
+For the second model, the density plots reveal that all three chains converge to very similar normal distributions, indicating that the MCMC samples are effectively capturing the posterior distribution of the parameters and suggesting well-defined and stable parameter estimates.
+
+
+***Autocorrelation plot***
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+samples_matrix <- as.matrix(samples_diag)
+
+# Autocorrelation Plots
+for (i in seq(1, length(params2), by = 4)) {
+  end <- min(i + 3, length(params2))
+  param_subset <- params2[i:end]
+  
+  plots <- list()
+  
+  for (p in param_subset) {
+    p_samples <- samples_matrix[, p]
+    acf_vals <- acf(p_samples, plot = FALSE)
+    acf_df <- with(acf_vals, data.frame(lag, acf))
+    
+    g <- ggplot(acf_df, aes(x = lag, y = acf)) +
+      geom_bar(stat = "identity", fill = "lightblue", color = "blue") +
+      labs(title = paste("ACF -", p)) +
+      theme_minimal(base_size = 11)
+    
+    plots[[p]] <- g
+  }
+  
+  grid.arrange(grobs = plots, ncol = 2)
+}
+```
+
+In the second model, the autocorrelation drops off quickly across lags for all parameters, even better than the first model, indicating that the MCMC chains are mixing more efficiently and producing samples that are closer to being independent.
+
+**ESS and R-Hat**
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+samples_matrix <- as.matrix(samples_diag)
+
+posterior_samples <- as_draws_df(samples_matrix)
+
+# Print only the relevant stats for convergence analysis
+summary_stats <- summarize_draws(posterior_samples, "rhat", "ess_bulk", "ess_tail")
+
+print(summary_stats, n = Inf)
+
+
+```
+
+Finally, the second model also shows excellent R-Hat values and ESS across all parameters, confirming the convergence of the model.
+
+
+## Third Model
+
+For the third model, we created new variables by combining existing features, with the goal of capturing additional structure in the data and identifying potentially significant interactions. Specifically, the newly derived variables include:
+
+- **OwnerLowQuality**: A binary variable indicating properties that may be considered lower quality. It has value 1 if the property is *unfurnished*, has *2 or fewer total rooms* and is listed directly by the *owner*.
+
+- **IsHighFloor**: Indicates whether the property is located on a high floor, defined as being in the top *25% of the floor distribution*.
+
+- **Furnished_Big**: Flags properties that are both *furnished* and *larger than the median size*. These may represent higher-end listings and could correlate with increased rental value.
+
+- **AgentFurnished**: Marks properties that are *furnished* and managed by an *agent*, rather than directly by the owner. This may reflect more professional property setups and potentially higher prices.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, class.source = 'fold-show'}
+# Creation of new variables derived from pre-existing variables
+
+df_clean$OwnerLowQuality <- ifelse(df_clean$Point.of.Contact == "Contact_Owner" &
+                                   df_clean$Furnishing.Status == "Unfurnished" &
+                                   df_clean$RoomsTotal <= 2, 1, 0)
+
+df_clean$Is_HighFloor <- ifelse(df_clean$Floor >= quantile(df_clean$Floor, 0.75, na.rm = TRUE), 1, 0)
+
+df_clean$Furnished_Big <- ifelse(df_clean$Furnishing.Status == "Furnished" & df_clean$Size > median(df_clean$Size, na.rm = TRUE), 1, 0)
+
+df_clean$AgentFurnished <- ifelse(df_clean$Point.of.Contact != "Contact_Owner" &
+                                   df_clean$Furnishing.Status == "Furnished", 1, 0)
+
+
+```
+
+These new variables are included in the model as fixed effects, with the same prior as the other regression coefficients, that is $\mathcal{N}(0,0.01)$.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, class.source = 'fold-show'}
+
+model_string_rental_final <- "
+model {
+  for (i in 1:N) {
+    Rent[i] ~ dnorm(mu[i], tau_obs)
+    y_rep[i] ~ dnorm(mu[i], tau_obs)
+
+    mu[i] <- beta[1] +             
+             beta[2] * Size[i] +
+             beta[3] * Floor[i] +
+             beta[4] * RoomsTotal[i] +
+             beta[5] * Furnishing1[i] +
+             beta[6] * Furnishing2[i] +
+             beta[7] * Tenant2[i] +
+             beta[8] * Contact1[i] +
+             beta[9] * OwnerLowQuality[i] +
+             beta[10] * Is_HighFloor[i] +
+             beta[11] * Furnished_Big[i] +
+             beta[12] * AgentFurnished[i] +
+             city_effect[City[i]]
+  }
+
+  for (j in 1:4) {
+    beta[j] ~ dnorm(0, 1)
+  }
+
+  for (j in 5:12) {
+    beta[j] ~ dnorm(0, 0.01)
+  }
+
+  for (c in 1:C) {
+    city_effect_raw[c] ~ dnorm(0, 0.01)
+  }
+
+  avg_raw <- sum(city_effect_raw[1:C]) / C
+  for (c in 1:C) {
+    city_effect[c] <- (city_effect_raw[c] - avg_raw) * sd_city
+  }
+
+  sd_city ~ dgamma(1, 1)
+  sigma_obs ~ dgamma(1, 1)
+  tau_obs <- pow(sigma_obs, -2)
+}
+"
+
+jags_data3 <- list(
+  N = nrow(df_clean),
+  C = length(unique(df_clean$City)),
+  Rent = df_clean$Rent_bc,
+  Size = df_clean$Size_bc,
+  Floor = df_clean$Floor,
+  RoomsTotal = df_clean$RoomsTotal,
+  Furnishing1 = dummies_df$Furnishing.Status.Semi_Furnished,
+  Furnishing2 = dummies_df$Furnishing.Status.Unfurnished,
+  Tenant2 = dummies_df$Tenant.Preferred.Family,
+  Contact1 = dummies_df$Point.of.Contact.Contact_Owner,
+  OwnerLowQuality = df_clean$OwnerLowQuality,
+  Is_HighFloor = df_clean$Is_HighFloor,
+  Furnished_Big = df_clean$Furnished_Big,
+  AgentFurnished = df_clean$AgentFurnished,
+  City = as.numeric(factor(df_clean$City)),
+  y_rep = rep(NA, nrow(df_clean))
+)
+
+inits3 <- function() {
+  list(
+    beta = rnorm(12, 0, 1),
+    sd_city = rgamma(1, 1, 1),
+    sigma_obs = rgamma(1, 1, 1),
+    city_effect_raw = rnorm(jags_data3$C, 0, 1)
+  )
+}
+
+```
+
+### Execution
+
+Let's execute the final model:
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# Parameters to monitor
+params <- c("beta", "sd_city", "sigma_obs", "city_effect", "y_rep")
+
+# Build and run the model
+jags_model_final <- jags.model(
+  textConnection(model_string_rental_final),
+  data = jags_data3,
+  inits = inits3,
+  n.chains = 3
+)
+
+# Burn-in
+update(jags_model_final, n.iter = 1000)
+
+# Sampling
+samples <- coda.samples(
+  model = jags_model_final,
+  variable.names = params,
+  n.iter = 5000
+)
+
+
+```
+
+### Model summary and evaluation
+
+We check for the final model the posterior predictive check:
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Extracting the matrix of samples from the chain
+samples_matrix <- as.matrix(samples)
+y_rep_idx <- grep("^y_rep\\[", colnames(samples_matrix))
+y_rep_samples <- samples_matrix[, y_rep_idx]
+
+# Compute predictive mean for each observation
+y_rep_mean <- colMeans(y_rep_samples)
+
+# Use the original Rent variable
+observed <- df_clean$Rent_bc
+
+# Only the first 100 predictions to not clutter the graph
+color_scheme_set("blue")
+ppc_3 <- ppc_dens_overlay(y = observed, yrep = y_rep_samples[1:100, ]) +
+  ggtitle("Posterior Predictive Check") +
+  theme_minimal()
+
+ppc_3
+```
+
+From the plot, we notice only a slight improvement from the previous model, in particular in the higher ends of the distribution and in the middle part, around 3.15.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Summary statistics
+cat("Observed mean:", mean(observed), "\n", "Predicted mean:", mean(y_rep_mean), "\n", "Observed SD:", sd(observed), "\n", "Predicted SD:", sd(y_rep_mean), "\n")
+
+```
+
+For the final model we notice that the mean and the standard deviation have only slightly changed from the previous model, getting closer to the observed values but only by a little quantity.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Re-sampling without y_rep to avoid cluttering analyses
+samples_diag <- coda.samples(jags_model_final, variable.names = params_diag, n.iter = 5000)
+
+
+# DIC calculation
+dic_result <- dic.samples(jags_model_final, n.iter = 5000, type = "pD")
+mean_deviance <- mean(dic_result$deviance)
+mean_penalty <- mean(dic_result$penalty)
+dic_3 <- mean_deviance + mean_penalty
+
+print(paste("DIC value for the third model:", round(dic_3, 5)))
+```
+
+The DIC also improved only slightly from the previous model (-4.851), suggesting that the new variables have improved the model only marginally.
+
+### Convergence Diagnostics
+
+For the evaluation of the MCMC convergence Traceplot, density plots, autocorrelation, R-hat and ESS from the model summary were used, as for the previous models.
+
+***Traceplot***
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Convert samples to matrix
+samples_matrix <- as.matrix(samples_diag)
+all_params <- colnames(samples_matrix)
+
+# Select only relevant parameters for traceplot
+params <- all_params[grepl("beta|sd_city|city_effect", all_params)]
+chain_colors <- c("#2196F3", "#ff9800", "#003366")
+
+# Plot traceplots
+for (i in seq(1, length(params), by = 4)) {
+  end <- min(i + 3, length(params))
+  param_subset <- params[i:end]
+  
+  traceplot <- mcmc_trace(samples_diag, pars = param_subset) + scale_color_manual(values = chain_colors) + theme(legend.position = "none")
+  print(traceplot)
+}
+
+```
+
+The conclusions we can draw from these traceplots are consistent with the previous models. In the final model, the trace plots show well-mixed and stationary chains, indicating good convergence and reliable posterior sampling.
+
+***Density plot***
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+params2 <- all_params[grepl("beta|city_effect", all_params)]
+
+# Plotting Density plots
+for (i in seq(1, length(params2), by = 4)) {
+  end <- min(i + 3, length(params2))
+  param_subset <- params2[i:end]
+  
+  density_plot <- mcmc_dens_overlay(samples_diag, pars = param_subset) + scale_color_manual(values = chain_colors)
+  print(density_plot)
+}
+
+```
+
+In the final model as well, the density plots show that all three MCMC chains converge to nearly identical normal-shaped distributions, indicating stable and consistent parameter convergence.
+
+***Autocorrelation plot***
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+samples_matrix <- as.matrix(samples_diag)
+
+# Plorring Autocorrelation
+for (i in seq(1, length(params2), by = 4)) {
+  end <- min(i + 3, length(params2))
+  param_subset <- params2[i:end]
+  
+  plots <- list()
+  
+  for (p in param_subset) {
+    p_samples <- samples_matrix[, p]
+    acf_vals <- acf(p_samples, plot = FALSE)
+    acf_df <- with(acf_vals, data.frame(lag, acf))
+    
+    g <- ggplot(acf_df, aes(x = lag, y = acf)) +
+      geom_bar(stat = "identity", fill = "lightblue", color = "blue") +
+      labs(title = paste("ACF -", p)) +
+      theme_minimal(base_size = 11)
+    
+    plots[[p]] <- g
+  }
+  
+  grid.arrange(grobs = plots, ncol = 2)
+}
+```
+
+In the final model as well, the autocorrelation drops off rapidly across all parameters, indicating chains are mixing very efficiently and that the samples are nearly independent, like the previous models. 
+
+**ESS and R-Hat**
+
+Finally, we measure the ESS and R-Hat for the final model.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+samples_matrix <- as.matrix(samples_diag)
+
+posterior_samples <- as_draws_df(samples_matrix)
+
+# Print only the relevant stats for convergence analysis
+summary_stats <- summarize_draws(posterior_samples, "rhat", "ess_bulk", "ess_tail")
+
+print(summary_stats, n = Inf)
+
+
+```
+
+The third model shows excellent R-Hat values and ESS across all parameters, confirming the convergence of the model.
+
+# Bayesian Models Comparison
+
+Now, we proceed to compare the performance and predictive accuracy of the three models.
+
+## DIC Comparison
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Create dataframe of DIC values
+dic_data <- data.frame(
+  Model = c("Model 1", "Model 2", "Model 3"),
+  DIC = c(dic_1, dic_2, dic_3)
+)
+
+names(chain_colors) <- dic_data$Model
+
+ggplot(dic_data, aes(x = Model, y = DIC, fill = Model)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = chain_colors) +
+  coord_cartesian(ylim = c(min(dic_data$DIC) - 0.01, max(dic_data$DIC) + 0.01)) +
+  labs(
+    title = "DIC Comparison of Models",
+    x = "Models",
+    y = "DIC Value"
+  )
+
+cat("Model 1 DIC:", round(dic_1, 5), "\n", "Model 2 DIC:", round(dic_2, 5), "\n","Model 3 DIC:", round(dic_3, 5), "\n")
+
+
+```
+
+All three DIC values are negative, indicating good overall model fit. We observe a substantial improvement from the first to the second model, followed by only a marginal improvement between the second and the third model.
+
+## PPC comparison
+
+We also compare the PPC across the three models.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Model 1
+ppc_1 + 
+  ggtitle("Model 1") +
+  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5))
+
+# Model 2
+ppc_2 + 
+  ggtitle("Model 2") +
+  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5))
+
+# Final Model
+ppc_3 + 
+  ggtitle("Model 3") +
+  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5))
+
+```
+Over the course of the models, we observe a clear improvement in the upper tail of the rent distribution, where earlier models tended to underpredict, in particular from 3.15 to 3.25. There has been also a slight improvement around the central region of the distribution (approximately at ≈ 3.12).
+
+Despite their differences, all models appear to fit the data reasonably well. 
+
+Based on the overall predictive performance and model diagnostics, **we selected the third model for parameter estimation** and **comparison with the corresponding Frequentist model**.
+
+
+## Credible Intervals and interpretation of results
+
+We now use the third model to analyze the statistical results obtained from the posterior distribution of the coefficients to assess the relationship between the target variable *Rent* and the predictor variables.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+samples_matrix <- as.matrix(samples_diag)
+
+beta_samples <- samples_matrix[, grep("^beta\\[", colnames(samples_matrix))]
+
+real_names <- c(
+  "Intercept", "Size_bc", "Floor", "RoomsTotal",
+  "Furnishing1", "Furnishing2", "Tenant2", "Contact1",
+  "OwnerLowQuality", "Is_HighFloor", "Furnished_Big", "AgentFurnished"
+)
+
+summary_table <- data.frame(
+  Parameter = real_names,
+  Mean = apply(beta_samples, 2, mean),
+  SD = apply(beta_samples, 2, sd),
+  q2.5 = apply(beta_samples, 2, quantile, probs = 0.025),
+  q25 = apply(beta_samples, 2, quantile, probs = 0.25),
+  q50 = apply(beta_samples, 2, quantile, probs = 0.50),
+  q75 = apply(beta_samples, 2, quantile, probs = 0.75),
+  q97.5 = apply(beta_samples, 2, quantile, probs = 0.975)
+)
+
+
+# Create and style the table of results
+kable(summary_table, format = "html", caption = "Summary of JAGS Model Output") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+
+
+```
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+plot_data <- summary_table %>%
+  rename(
+    parameter = Parameter,
+    mean = Mean,
+    ci_lower = q2.5,
+    ci_upper = q97.5
+  )  %>%
+  filter(parameter != "Intercept")
+
+# Plotting Credible Intervals
+ggplot(plot_data, aes(x = mean, y = reorder(parameter, mean))) +
+  geom_point(color = "#0C2C47", size = 2) +
+  geom_errorbarh(aes(xmin = ci_lower, xmax = ci_upper), height = 0.3, color = "#0C2C47") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "#8C2230") +
+  labs(
+    x = "Posterior Mean and 95% Credible Interval",
+    y = "Parameter",
+    title = "Posterior Distributions of Model Parameters"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.background = element_rect(fill = "#F0F0F0", color = NA),
+    panel.background = element_rect(fill = "#F0F0F0", color = NA),
+    legend.position = "none"
+  )
+
+```
+
+**1. Significant Predictors**
+
+- **Size (`beta[2]`)**  
+  - **Point Estimate:** 0.00218  
+  - **95% CI Estimate:** [0.00199, 0.00239]  
+  - **Interpretation:** Strong positive effect, indicating that larger properties are associated with higher rental prices.  
+<br>
+
+- **RoomsTotal (`beta[4]`)**  
+  - **Point Estimate:** 0.0095  
+  - **95% CI Estimate:** [0.0089, 0.01009]  
+  - **Interpretation:** Statistically significant and positive; properties with more rooms are linked to higher rents.  
+<br>
+
+- **Furnishing1 (Semi-Furnished) (`beta[5]`)**  
+  - **Point Estimate:** –0.00713  
+  - **95% CI Estimate:** [–0.01006, –0.00426]  
+  - **Interpretation:** Slight negative, suggesting Semi-Furnished properties are tipically associated with slightly lower rent.  
+<br>
+
+- **Furnishing2 (`beta[6]`)**  
+  - **Point Estimate:** –0.01153  
+  - **95% CI Estimate:** [–0.01446, –0.0086]  
+  - **Interpretation:** Strong Negative effect, indicating that Unfurnished homes are associated with lower rent.  
+<br>
+
+- **Contact1 (`beta[8]`)**  
+  - **Point Estimate:** –0.01819  
+  - **95% CI Estimate:** [–0.01991, –0.01645]  
+  - **Interpretation:** Properties managed by the owner may be correlate with slightly lower rent compared to those managed by agents.  
+<br>
+
+- **OwnerLowQuality (`beta[9]`)**  
+  - **Point Estimate:** –0.00775 
+  - **95% CI Estimate:** [–0.01029, –0.0052]  
+  - **Interpretation:** Properties marked as “low quality” tend to lower rental prices.  
+<br>
+
+- **Is_HighFloor (`beta[10]`)**  
+  - **Point Estimate:** 0.00356  
+  - **95% CI Estimate:** [0.00166, 0.00524]  
+  - **Interpretation:** Being on a high floor appears to slightly increase rental prices.  
+<br>
+
+---
+
+**2. Marginally Significant Predictor**
+
+- **Floor (`beta[3]`)**  
+  - **Point Estimate:** 0.00019  
+  - **95% CI Estimate:** [–0.00092, 0.00048]  
+  - **Interpretation:** Effect on rent is very small and not statistically significant.  
+<br>
+
+- **Tenant2 (Family) (`beta[7]`)**  
+  - **Point Estimate:** –0.00244  
+  - **95% CI Estimate:** [–0.00456, –0.00035]  
+  - **Interpretation:** Slight negative effect, statistically weak. May reflect preferences influencing rent modestly.  
+<br>
+
+---
+
+**3. Non-Significant Predictors**
+
+
+- **Furnished_Big (`beta[11]`)**  
+  - **Point Estimate:** 0.00034  
+  - **95% CI Estimate:** [–0.00307, 0.00376]  
+  - **Interpretation:** No significant effect — the combination of size and furnishing does not strongly influence rent in this model.  
+<br>
+
+- **AgentFurnished (`beta[12]`)**  
+  - **Point Estimate:** 0.0017  
+  - **95% CI Estimate:** [–0.0018, 0.0052]  
+  - **Interpretation:** Small positive effect, but the credible interval includes 0, suggesting uncertainty.  
+<br>
+
+
+
+# Frequentist Analysis
+
+For the frequentist analysis, we will use a **Generalized Linear Mixed Model (GLMM)**. This model is suitable because, like the Bayesian hierarchical model, it can handle nested or grouped data and incorporate random effects to account for variability between different levels of the hierarchy. Using a GLMM allows for a direct comparison with the Bayesian approach.
+
+In the following linear mixed-effects regression model, Rent_bc is the target variable the model aims to explain based on the following predictors:
+
+Rentbc ∼ Sizebc + Floor + RoomsTotal + Furnishing.Status + Tenant.Preferred + Area.Type + Point.of.Contact + OwnerLowQuality + Is_HighFloor + Furnished_Big + AgentFurnished + (1 | City)
+  
+The estimated coefficients will reflect the effect of each predictor on the dependent variable Rent_bc:
+
+- A positive coefficient indicates that an increase in the value of the predictor is associated with an **increase in the rental price**, keeping the other predictors constant.
+
+- A negative coefficient suggests that an increase in the predictor is associated with a **decrease in the rental price**.
+
+The **p-value** measures the statistical significance of the coefficient: a low p-value (typically below 0.05) indicates that the predictor has a significant effect on Rent_bc and the corresponding coefficient is significantly different from zero. A high p-value implies that the predictor does not have a statistically significant impact on the rental price.
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, class.source = 'fold-show'}
+
+# Frequentist model with City as random effect
+
+glmm_model <- glmmTMB(
+  Rent_bc ~ 
+    Size_bc + 
+    Floor + 
+    RoomsTotal +
+    Furnishing.Status +
+    Tenant.Preferred +
+    Area.Type +
+    Point.of.Contact +
+    OwnerLowQuality +
+    Is_HighFloor +
+    Furnished_Big +
+    AgentFurnished +
+    (1 | City),
+  data = df_clean,
+  family = gaussian()
+)
+
+summary(glmm_model)
+```
+
+## Frequentist Model Summary
+
+These metrics observed from the summary suggest the model fits the data quite well, the *low residual variance* ($\sigma^2 = 0.000448$) indicates that the model explains most of the variability in rental prices, while the *relatively high log-likelihood* (11462.4) and *very low AIC (-22888.8)* and *BIC (-22772.6)* confirm a good balance between fit and model complexity. Additionally, the *random intercept variance for City (0.0003273)* shows that allowing for variability across cities captures meaningful group-level effects.
+
+---
+
+**1. Significant Predictors**
+
+- **Size**  
+  - **Estimate:** 0.00216  
+  - **p-value:** < 0.001  
+  - **Interpretation:** Highly significant. Larger properties are associated with higher rental prices.  
+<br>
+
+- **RoomsTotal**  
+  - **Estimate:** 0.00950  
+  - **p-value:** < 0.001  
+  - **Interpretation:** Highly significant. Properties with more rooms tend to command higher rent.  
+<br>
+
+- **Furnishing.StatusSemi_Furnished**  
+  - **Estimate:** –0.00738  
+  - **p-value:** < 0.001  
+  - **Interpretation:** Highly significant. Semi-furnished properties are associated with slightly lower rents compared to fully furnished ones.  
+<br>
+
+- **Furnishing.Status_Unfurnished**  
+  - **Estimate:** –0.01215  
+  - **p-value:** < 0.001  
+  - **Interpretation:** Highly significant. Unfurnished properties tend to have significantly lower rental prices.  
+<br>
+
+- **Tenant.Preferred_Family**  
+  - **Estimate:** –0.00515  
+  - **p-value:** < 0.001  
+  - **Interpretation:** Significant. Preference for families is associated with a moderate decrease in rent.  
+<br>
+
+- **Point.of.Contact_Contact_Owner**  
+  - **Point Estimate:** –0.01669  
+  - **p-value:** < 0.001  
+  - **Interpretation:** Highly significant. Contacting the owner directly is strongly associated with lower rent prices.  
+<br>
+
+- **OwnerLowQuality**  
+  - **Estimate:** –0.00746  
+  - **p-value:** < 0.001  
+  - **Interpretation:** Highly significant. “Low quality” properties are associated with lower rent.  
+<br>
+
+- **Is_HighFloor**  
+  - **Estimate:** 0.00342 
+  - **p-value:** 0.0004  
+  - **Interpretation:** Significant. Being on a high floor is associated with slightly higher rent.  
+<br>
+
+---
+
+**2. Marginally Significant Predictor**
+
+- **Point.of.Contact_Contact_Builder**  
+  - **Estimate:** –0.03536  
+  - **p-value:** 0.0956  
+  - **Interpretation:** Marginally significant. May indicate lower rent when the contact is a builder, but the effect is uncertain.  
+<br>
+
+---
+
+**3. Non-Significant Predictors**
+
+- **Floor**  
+  - **Estimate:** 0.00021  
+  - **p-value:** 0.139  
+  - **Interpretation:** Not significant. Floor level shows no meaningful effect on rent.  
+<br>
+
+- **Furnished_Big**  
+  - **Estimate:** 0.00024  
+  - **p-value:** 0.892  
+  - **Interpretation:** Not significant. No clear effect from having a big, furnished unit.  
+<br>
+
+- **AgentFurnished**  
+  - **Estimate:** 0.00142  
+  - **p-value:** 0.434  
+  - **Interpretation:** Not significant. Having a furnished unit through an agent does not appear to impact rent.  
+<br>
+
+
+
+# Comparison of Bayesian and Frequentist
+
+To quantitatively compare the predictive performance of the Bayesian (JAGS) and frequentist (GLMM) models, we computed two standard error metrics: **Root Mean Squared Error (RMSE)** and **Mean Absolute Error (MAE)**.
+
+These metrics were calculated using the model predictions against the observed values of the transformed target variable `Rent_bc`. While RMSE emphasizes larger errors due to squaring, MAE provides a more general average of absolute deviations.
+
+The results allow us to evaluate which model produces more accurate predictions, highlighting potential gains from including hierarchical structure and uncertainty estimation in the Bayesian framework. Both metrics are evaluated for the third model.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+# Predictions from the glmmTMB model
+predictions_glmm <- predict(glmm_model, newdata = df_clean, type = "response")
+true_values <- df_clean$Rent_bc
+
+# Compute RMSE and MAE
+rmse_glmm <- sqrt(mean((predictions_glmm - true_values)^2))
+mae_glmm <- mean(abs(predictions_glmm - true_values))
+
+cat("RMSE for the GLMM model:", rmse_glmm, "\n", "MAE for the GLMM model:", mae_glmm, "\n")
+
+```
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+y_rep_matrix <- as.matrix(samples)[, grep("^y_rep\\[", colnames(as.matrix(samples)))]
+
+# Average of posterior predictions
+posterior_predictions <- colMeans(y_rep_matrix)
+observed_values <- df_clean$Rent_bc
+
+# Compute RMSE and MAE
+rmse_jags <- sqrt(mean((posterior_predictions - observed_values)^2))
+mae_jags <- mean(abs(posterior_predictions - observed_values))
+
+cat("RMSE for the JAGS model:", rmse_jags, "\n", "MAE for the JAGS model:", mae_jags, "\n")
+
+```
+The performance metrics show that both models provide very similar results in predicting `Rent_bc`. These nearly identical values suggest that both the frequentist and Bayesian approaches achieve comparable predictive accuracy on this dataset. While the GLMM model performs slightly better in terms of RMSE and MAE, the difference is minimal. 
+
+This indicates that the added complexity of the Bayesian model in this case has not lead to substantial gains in prediction error, but may still offer advantages in interpretability and flexibility.
+
+
+# Conclusion
+
+In this project I created different version of bayesian hierarchical models, experimenting with different sets of predictorsm parameters and model structures and effects.  After identifying the best-performing Bayesian model, we compared its results with those of a corresponding Frequentist model.
+Based on the results obtained from both the Bayesian and Frequentist models, we can draw several conclusions regarding the factors influencing rental prices:
+
+- **Significant Positive Effects**: Variables such as `Size`, `RoomsTotal`, and certain binary indicators like `Is_HighFloor` and `AgentFurnished` show positive and statistically significant effects on rental prices. This suggests that larger, well-positioned, furnished and agency-managed properties tend to be more expensive.
+
+- **Significant Negative Effects**: Predictors like `OwnerLowQuality`, `Furnishing.StatusUnfurnished`, and `Point.of.ContactContact_Owner` exhibit negative effects on rent, implying that less furnished or directly owner-managed listings (especially those smaller in size) tend to have lower rental prices.
+
+- **Marginal or Non-Significant Effects**: Some predictors such as `Furnished_Big`, `Floor` did not show strong or consistent effects in either framework, suggesting that their influence may be limited or context-dependent.
+
+Both the approaches resulted in *very similar predictive performance*, with nearly identical RMSE and MAE values, indicating that either method can be effectively used for rental price estimation in this context. However, the Bayesian framework offers the added advantage of *probabilistic interpretability* and *flexible hierarchical modeling*.
+
